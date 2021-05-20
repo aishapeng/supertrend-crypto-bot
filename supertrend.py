@@ -11,10 +11,15 @@ import numpy as np
 from datetime import datetime
 import time
 
-exchange = ccxt.binanceus({
+exchange = ccxt.binance({
     "apiKey": config.BINANCE_API_KEY,
     "secret": config.BINANCE_SECRET_KEY
 })
+
+pnl = 0
+symbol = 'ADA/BUSD'
+amount = 13
+last_bought = 0
 
 def tr(data):
     data['previous_close'] = data['close'].shift(1)
@@ -32,6 +37,16 @@ def atr(data, period):
 
     return atr
 
+def sma(data, window):
+    sma = data.rolling(window = window).mean()
+    return sma
+
+def bb(data, sma, window):
+    std = data.rolling(window = window).std()
+    upper_bb = sma + std * 2
+    lower_bb = sma - std * 2
+    return upper_bb, lower_bb
+
 def supertrend(df, period=7, atr_multiplier=3):
     hl2 = (df['high'] + df['low']) / 2
     df['atr'] = atr(df, period)
@@ -39,6 +54,9 @@ def supertrend(df, period=7, atr_multiplier=3):
     df['lowerband'] = hl2 - (atr_multiplier * df['atr'])
     df['in_uptrend'] = True
 
+    df['sma'] = sma(df['close'], 20)
+    df['upper_bb'], df['lower_bb'] = bb(df['close'], df['sma'], 20)
+ 
     for current in range(1, len(df.index)):
         previous = current - 1
 
@@ -62,6 +80,8 @@ in_position = False
 
 def check_buy_sell_signals(df):
     global in_position
+    global pnl
+    global last_bought
 
     print("checking for buy and sell signals")
     print(df.tail(5))
@@ -71,33 +91,39 @@ def check_buy_sell_signals(df):
     if not df['in_uptrend'][previous_row_index] and df['in_uptrend'][last_row_index]:
         print("changed to uptrend, buy")
         if not in_position:
-            order = exchange.create_market_buy_order('ETH/USD', 0.05)
+            order = exchange.create_market_buy_order(symbol, amount)
             print(order)
+            pnl -= order['cost']
             in_position = True
         else:
             print("already in position, nothing to do")
     
-    if df['in_uptrend'][previous_row_index] and not df['in_uptrend'][last_row_index]:
+    if (df['in_uptrend'][previous_row_index] and not df['in_uptrend'][last_row_index]) or (df['close'][last_row_index] > df['upper_bb'][last_row_index]):
         if in_position:
             print("changed to downtrend, sell")
-            order = exchange.create_market_sell_order('ETH/USD', 0.05)
+            order = exchange.create_market_sell_order(symbol, amount)
             print(order)
+            pnl += order['cost']
             in_position = False
         else:
             print("You aren't in position, nothing to sell")
 
 def run_bot():
+    global pnl
+    global in_position
     print(f"Fetching new bars for {datetime.now().isoformat()}")
-    bars = exchange.fetch_ohlcv('ETH/USDT', timeframe='1m', limit=100)
-    df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+    print("PNL = ",pnl)
+    print("in_position = ",in_position)
+    try:
+        bars = exchange.fetch_ohlcv(symbol, timeframe='1m', limit=100)
+        df = pd.DataFrame(bars[:-1], columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        supertrend_data = supertrend(df)
+        check_buy_sell_signals(supertrend_data)
+    except Exception as e:
+        print('Error fetch bars!!!')
 
-    supertrend_data = supertrend(df)
-    
-    check_buy_sell_signals(supertrend_data)
-
-
-schedule.every(10).seconds.do(run_bot)
+schedule.every(1).minutes.do(run_bot)
 
 
 while True:
