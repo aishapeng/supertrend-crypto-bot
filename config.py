@@ -1,0 +1,2 @@
+BINANCE_API_KEY = 'xxx'
+BINANCE_SECRET_KEY = 'xxx'
